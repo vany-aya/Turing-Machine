@@ -1,6 +1,6 @@
 module Main where
 
-
+import System.Environment
 import Lib
 import Graphics.Gloss
 import Graphics.Gloss.Interface.IO.Interact
@@ -15,7 +15,7 @@ type Step = Int
 type Stripe = [(Char, Char)]
 type Table = Map (State,Char) (State,(Char,Step))
 data MT = MT
- {
+ {  
     currstate :: State
     ,currpos :: Int
     ,strip :: Stripe
@@ -26,6 +26,15 @@ data MT = MT
   deriving (Show)
 data TerminatedMT = TerminatedMT
  deriving (Show)
+
+data DFSM = DFSM
+  {
+    readingWord :: Bool
+    ,badCh :: (Bool, Char)
+    ,pause :: Bool
+    ,break :: Bool
+    ,stp :: Bool
+  }
 data Error = NoStateDescribtion
            | NoStartStateDescribtion
            | RepitedStateDescribtion State
@@ -56,14 +65,20 @@ data World = World
    ,tableYPOS :: Int
    ,rows :: [String]
    ,image :: Picture
+   ,dfsm :: DFSM
+   ,start :: State
+   ,str :: Stripe
  }
+
+initStripe :: Stripe -> String -> Stripe
+initStripe stripe str = Prelude.foldl (\acc (x , y) -> (writeStipe acc y 0 x)) stripe (Data.List.zip str [0, 1 .. ((length str) - 1)]) 
 
 getWorld :: String -> Either World [Error]
 getWorld str = getWorld1 (parseConfig str)
  where
  getWorld1 :: Either MT [Error] -> Either World [Error]
  getWorld1 (Right errs) = Right errs
- getWorld1 (Left (MT cs cp st t fc alph)) = Left (World mt 0 (cp * 20) (cell_w * (fromJust (elemIndex (readStripe cp 0 st) alph))) (30 * (fromJust (elemIndex cs r))) r pic)
+ getWorld1 (Left (MT cs cp st t fc alph)) = Left (World mt 0 (cp * 20) (cell_w * (fromJust (elemIndex (readStripe cp 0 st) alph))) (30 * (fromJust (elemIndex cs r))) r pic (DFSM True (False,' ') False False False) cs st)
   where
   mt = (MT cs cp st t fc alph)
   pic = Pictures (tabl ++ lenta ++ cells ++ col ++ rws)
@@ -85,10 +100,25 @@ getWorld str = getWorld1 (parseConfig str)
   r = ((nub (Data.List.map (\x -> (fst x)) (Data.Map.keys t))) ++ (nub (Data.Set.toList(Data.Set.delete cs fc))))
 
 handler :: Event -> World -> World
+handler (EventKey (SpecialKey KeyF4) Down _ _) (World mt frame crp tx ty r pictrs (DFSM rding badCh paus True True) ist istr) = (World mt frame crp tx ty r pictrs (DFSM rding badCh paus True False) ist istr)
+handler (EventKey (SpecialKey KeyF3) Down _ _) (World mt frame crp tx ty r pictrs (DFSM rding badCh paus br stp) ist istr) = (World mt frame crp tx ty r pictrs (DFSM rding badCh paus (not br) False) ist istr)
+handler (EventKey (SpecialKey KeyF1) Down _ _) (World (MT cs cp strip t fc alph) frame crp tx ty r (Pictures pic) (DFSM _ badCh _ br stp) ist istr) = (World (MT ist 0 (initStripe (stripe (head alph)) [(head alph)]) t fc alph) 0 0 0 0 r (Pictures pic) (DFSM True badCh False False stp) ist istr)
+handler (EventKey (SpecialKey KeyF2) Down _ _) (World (MT cs cp strip t fc alph) frame crp tx ty r (Pictures pic) (DFSM False badCh _ br stp) ist istr) = (World (MT ist 0 istr t fc alph) 0 0 0 0 r (Pictures pic) (DFSM False badCh False False False) ist istr)
+handler (EventKey (Char ch) Down _ _)  (World (MT cs cp strip t fc alph) frame crp tx ty r (Pictures pic) (DFSM True badCh False False False)  ist istr) = (World (MT cs cpp strp t fc alph) frm curs tx ty r pict (DFSM True ((not correctChar),ch) False False False)  ist istr)
+ where
+ frm = if (correctChar) then (if (crp + 20 < 10 * 20) then frame else (5 + frame)) else frame
+ curs = if (correctChar) then (if (crp + 20 < 10 * 20) then crp + 20 else crp + 20 - 5 * 20) else crp
+ pict = if (correctChar) then (Pictures pic) else (Pictures pic)
+ strp = if (correctChar) then (writeStipe strip cp 0 ch) else strip
+ cpp = if (correctChar) then (cp + 1) else cp
+ correctChar = (Data.Set.member ch (Data.Set.fromList alph))
+handler (EventKey (SpecialKey KeyEnter) Down _ _)  (World (MT cs cp strip t fc alph) frame crp tx ty r pic (DFSM True badCh False br st)  ist istr) =  (World (MT cs 0 strip t fc alph) 0 0 tx ty r pic (DFSM False (False,' ') False br st)  ist strip)
+handler (EventKey (SpecialKey KeySpace) Down _ _) (World (MT cs cp strip t fc alph) frame crp tx ty r pic (DFSM False badCh p br st)  ist istr) = (World (MT cs cp strip t fc alph) frame crp tx ty r pic (DFSM False badCh (not p) br st)  ist istr)
 handler _ x = x
+ 
 
 renderer :: World -> Picture
-renderer (World (MT cs cp strip t fc alph) frame crp tx ty r (Pictures x)) = Pictures ((cell : (y : x)) ++ drawLetters)
+renderer (World (MT cs cp strip t fc alph) frame crp tx ty r (Pictures x) (DFSM _ badCh paus br _) _ _) = Pictures ((cell : (y : x)) ++ drawLetters ++ badChar ++ pausee ++ mode)
  where
  y = Line [(225 + crpp,height + 60) , (225 + crpp + 3, 60 + height - 3) , (225 + crpp + 6, 60 + height), (225 + crpp,60 + height)]
  crpp = fromIntegral crp
@@ -96,36 +126,45 @@ renderer (World (MT cs cp strip t fc alph) frame crp tx ty r (Pictures x)) = Pic
  drawLetters :: [Picture]
  drawLetters = Data.List.map (\x -> (Translate (22 + 20 * (fromIntegral (x - frame))) (height + 40) (Scale 0.09 0.09 (Text [readStripe (x - 10) 0 strip])))) [(frame), (frame + 1) .. (frame + 20)]
  cell = Line [((fromIntegral tx) + 4,(fromIntegral ty) + 4) , ((fromIntegral tx) + 4,(fromIntegral ty) + 20 - 4) , ((fromIntegral tx) + 70 - 4,(fromIntegral ty) + 20 - 4) , ((fromIntegral tx)+ 70 - 4,(fromIntegral ty) + 4) , ((fromIntegral tx) + 4,(fromIntegral ty) + 4)]
- 
+ badChar = if (fst badCh) then [(Translate 50 255 (Scale 0.4 0.4 (Text ("Bad Char   \'" ++ [snd badCh] ++ ['\'']))))] else []
+ pausee = if (paus) then  [(Translate 150 300 (Scale 0.4 0.4 (Text ("Pause. "))))] else []
+ mode = if(br) then  [(Translate 0 255 (Scale 0.4 0.4 (Text ("Debug mode. "))))] else []
 updater :: Float -> World -> World
-updater _ (World (MT cs currp str t fs alph) frame cp tx ty r pic) = if (notNeedsMoving1) then (if (notNeedsMoving2_x) then (if (notNeedsMoving2_y) then (nextMtStep) else (moveTableYCursor world)) else (moveTableXCursor world)) else (mooveStripCursor world)
+updater _ wrld | ((stp (dfsm wrld)) == True) = wrld
+updater _ wrld | ((pause (dfsm wrld)) == True) = wrld
+updater _ wrld | ((readingWord (dfsm wrld)) ==  True) = wrld
+updater _ (World (MT cs currp str t fs alph) frame cp tx ty r pic fsm ist istr) = if (notNeedsMoving1) then (if (notNeedsMoving2_x) then (if (notNeedsMoving2_y) then (nextMtStep) else (moveTableYCursor world)) else (moveTableXCursor world)) else (mooveStripCursor world)
  where
  mooveStripCursor :: World -> World
- mooveStripCursor (World (MT cs currp str t fc alph) frame cp tx ty r pic) = if (((currp - frame) * 20 - cp) > 0) then w1 else w2
+ mooveStripCursor (World (MT cs currp str t fc alph) frame cp tx ty r pic fsm ist istr) = if (((currp - frame) * 20 - cp) > 0) then w1 else w2
   where
-  w1 = if (cp + 1 < 10 * 20) then (World (MT cs currp str t fc alph) frame (cp + 1) tx ty r pic) else (World (MT cs currp str t fc alph) (frame + 5) (cp + 1 - 5 * 20) tx ty r pic)
-  w2 = if (cp - 1 > ((-10) * 20)) then (World (MT cs currp str t fc alph) frame (cp - 1) tx ty r pic) else (World (MT cs currp str t fc alph) (frame - 5) (cp - 1 + 5 * 20) tx ty r pic)
+  w1 = if (cp + 1 < 10 * 20) then (World (MT cs currp str t fc alph) frame (cp + 1) tx ty r pic fsm ist istr) else (World (MT cs currp str t fc alph) (frame + 5) (cp + 1 - 5 * 20) tx ty r pic fsm ist istr)
+  w2 = if (cp - 1 > ((-10) * 20)) then (World (MT cs currp str t fc alph) frame (cp - 1) tx ty r pic fsm ist istr) else (World (MT cs currp str t fc alph) (frame - 5) (cp - 1 + 5 * 20) tx ty r pic fsm ist istr)
  moveTableXCursor :: World -> World
- moveTableXCursor (World (MT cs currp str t fc alph) frame cp tx ty r pic) = if (((fromJust (elemIndex (readStripe currp 0 str) alph)) * cell_w - tx) > 0) then w1 else w2
+ moveTableXCursor (World (MT cs currp str t fc alph) frame cp tx ty r pic fsm ist istr) = if (((fromJust (elemIndex (readStripe currp 0 str) alph)) * cell_w - tx) > 0) then w1 else w2
   where
-  w1 = (World (MT cs currp str t fc alph) frame cp (tx + 1) ty r pic)
-  w2 = (World (MT cs currp str t fc alph) frame cp (tx - 1) ty r pic)
+  w1 = (World (MT cs currp str t fc alph) frame cp (tx + 1) ty r pic fsm ist istr)
+  w2 = (World (MT cs currp str t fc alph) frame cp (tx - 1) ty r pic fsm ist istr)
  moveTableYCursor :: World -> World
- moveTableYCursor (World (MT cs currp str t fc alph) frame cp tx ty r pic) = if (((fromJust (elemIndex cs r)) * 20 - ty) > 0) then w1 else w2
+ moveTableYCursor (World (MT cs currp str t fc alph) frame cp tx ty r pic fsm ist istr) = if (((fromJust (elemIndex cs r)) * 20 - ty) > 0) then w1 else w2
   where
-  w1 = (World (MT cs currp str t fc alph) frame cp tx (ty + 1) r pic)
-  w2 = (World (MT cs currp str t fc alph) frame cp tx (ty - 1) r pic)
+  w1 = (World (MT cs currp str t fc alph) frame cp tx (ty + 1) r pic fsm ist istr)
+  w2 = (World (MT cs currp str t fc alph) frame cp tx (ty - 1) r pic fsm ist istr)
+  
+
  notNeedsMoving1 = ((currp - frame) * 20 - cp == 0)
  notNeedsMoving2_x = (((fromJust (elemIndex (readStripe currp 0 str) alph)) * cell_w - tx) == 0)
  notNeedsMoving2_y = (((fromJust (elemIndex cs r)) * 20 - ty) == 0)
  mt = (MT cs currp str t fs alph)
  cell_w = 70
- world = (World mt frame cp tx ty r pic)
- nextMtStep = if (isRight (processMT mt)) then world else (World (fromLeft (MT [] 0 [] Data.Map.empty Data.Set.empty []) (processMT mt)) frame cp tx ty r pic)
+ world = (World mt frame cp tx ty r pic fsm ist istr)
+ nextMtStep = if (isRight (processMT mt)) then world else (World (fromLeft (MT [] 0 [] Data.Map.empty Data.Set.empty []) (processMT mt)) frame cp tx ty r pic newFsm ist istr)
+  where
+  newFsm = (DFSM (readingWord fsm) (badCh fsm) (pause fsm) (Main.break fsm) stpp)
+  stpp = if ((Main.break fsm) == True) then True else (stp fsm)
  
 
-initStripe :: Stripe -> String -> Stripe
-initStripe stripe str = Prelude.foldl (\acc (x , y) -> (writeStipe acc y 0 x)) stripe (Data.List.zip str [0, 1 .. ((length str) - 1)]) 
+
 
 writeStipe :: Stripe -> Int -> Int -> Char -> Stripe
 writeStipe ((x1,x2): xs) x y z | (x == y) && x >= 0 = ((z,x2):xs)
@@ -154,7 +193,7 @@ parseConfig str = parseMT (parseTable str)
 
 parseMT :: (Either Table [Error], [State], String) -> Either MT [Error]
 parseMT (Right errs, _ , _ ) = Right errs
-parseMT (Left t, (x:xs), alph) = Left (MT x 0 (initStripe (stripe (head alph)) "aaabbbcccabc") t (Data.Set.fromList xs) alph) 
+parseMT (Left t, (x:xs), alph) = Left (MT x 0 (initStripe (stripe (head alph)) [(head alph)]) t (Data.Set.fromList xs) alph) 
 
 parseTable :: String -> (Either Table [Error], [State], String)
 parseTable str  |(length (lines str) < 1) = (Right [NoAlph],[],[])
@@ -213,5 +252,12 @@ verifyTable2 start fins goTo goFrom = ((isSubsetOf goTo (Data.Set.union fins goF
 main :: IO ()
 --main = someFunc
 --main = display (InWindow "Nice Window" (400, 400) (100, 100)) white (Circle 80)
-main = play (InWindow "Nice Window" (400, 400) (100, 100)) (greyN 1) 90 (fromLeft (World (MT [] 0 [] (Data.Map.empty) (Data.Set.empty) []) 0 0 0 0 [] (Pictures [])) (getWorld "*abc^\n  s1 fin\n s1 {* * -1 s2 } {a a -1 s2}  {b b -1 s2} {c c -1 s2 } {^ ^ -1 s2} \n s2 {* ^ 1 s3} {a b 1 s2} {b b -1 s2  } {c c -1 s2} {^ a -1 s2}  \n s3 {* * -1 s4} {a a 1 s3} {b b 1 s3} {c c 1 s3} {^ ^ 1 s8} \n s4 {* * 0 s4} {a * -1 s5} {b * -1 s6} {c * -1 s7} {^ ^ 0 s4} \n s5 {* a 1 s3} {a a -1 s5} {b b -1 s5} {c c -1 s5} {^ ^ -1 s5}\n s6 {* b 1 s3} {a a -1 s6} {b b -1 s6} {c c -1 s6} {^ ^ -1 s6}\n s7 {* c 1 s3} {a a -1 s7} {b b -1 s7} {c c -1 s7} {^ ^ -1 s7}\n s8 {* * 0 fin} {a a 0 s3} {b b 0 s3} {c c 0 s3} {^ ^ 0 s3} ")) renderer handler updater
+main = do
+  args <- getArgs
+  str <- readFile (head args)
+  let wrld = (getWorld str)
+  if (isLeft wrld) then
+    play (InWindow "Nastya is the best of the VMK" (400, 400) (100, 100)) (greyN 1) 90 (fromLeft (World (MT [] 0 [] (Data.Map.empty) (Data.Set.empty) []) 0 0 0 0 [] (Pictures []) (DFSM True (False,' ') False False False) [] []) (getWorld str)) renderer handler updater
+  else
+    print (fromRight [] (wrld))
 --main = print (parseConfig "abcde\n  start fin1 qaa fin2\n start {a  c  -1  med  }  {b  b 0 fin2}  {c a -1 med  }  {d e 0 start  } {e a 1 start  } \n med { a b 1 start} {b a 1 start  } {c b -1 qaa} {d c -1 med} {e c -1 med}  \n   ")
