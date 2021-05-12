@@ -27,13 +27,15 @@ source-repository head
 
 library
   exposed-modules:
-      Lib
+      Lib, Types, Parsing, Drawer, Init, Engine, Control
   other-modules:
       Paths_tst1
   hs-source-dirs:
       src
   build-depends:
       base >=4.7 && <5
+      , containers
+      , gloss
   default-language: Haskell2010
 
 executable tst1-exe
